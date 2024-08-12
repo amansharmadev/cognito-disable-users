@@ -43,10 +43,10 @@ exports.handler = async (_event) => {
                 if (diffDays > daysInactive) {
                     console.log(`${user.Username} user last activity date is ${lastEventDate.toLocaleDateString()}, Hence disabling user.`);
 
-                    // await cognito.adminDisableUser({
-                    //     UserPoolId,
-                    //     Username: user.Username
-                    // }).promise();
+                    await cognito.adminDisableUser({
+                        UserPoolId,
+                        Username: user.Username
+                    }).promise();
                 }
             }
 
