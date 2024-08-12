@@ -1,0 +1,20 @@
+{
+  "name": "disable-inactive-cognito-user",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index",
+    "dev": "nodemon index"
+  },
+  "author": "Aman Sharma",
+  "license": "MIT",
+  "dependencies": {
+    "aws-sdk": "^2.1672.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
