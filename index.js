@@ -1,64 +1,128 @@
-
+require('dotenv').config();
 const AWS = require('aws-sdk');
-const cognito = new AWS.CognitoIdentityServiceProvider({
-    region: process.env.AWS_REGION,
+const MongoClient = require('mongodb').MongoClient;
+const nodemailer = require('nodemailer');
+
+const MONGO_URI = process.env.MONGO_URI;
+const UserPoolId = process.env.USER_POOL_ID;
+const FROM_EMAIL = process.env.FROM_EMAIL;
+const TO_EMAILS = process.env.TO_EMAILS.split(',');
+const Limit = 60;
+
+AWS.config.update({
     accessKeyId: process.env.AWS_ACCESS_KEY,
     secretAccessKey: process.env.AWS_SECRET_KEY,
+    region: process.env.AWS_REGION,
 });
-const UserPoolId = process.env.USER_POOL_ID;
-const Limit = Number(process.env.USER_LOOP_LIMIT) >= 60 ? 60 : Number(process.env.USER_LOOP_LIMIT);
-const daysInactive = Number(process.env.DAYS_INACTIVE || 90);
 
-exports.handler = async (_event) => {
+const cognito = new AWS.CognitoIdentityServiceProvider();
+
+
+const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT,
+    auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASSWORD
+    },
+    tls: {
+        rejectUnauthorized: false
+    },
+    SES: new AWS.SES()
+});
+
+exports.handler = async (event) => {
     try {
-        let paginationToken;
+        // Connect to MongoDB
+        const client = await MongoClient.connect(MONGO_URI);
+        const db = client.db();
+        const sessionsCollection = db.collection('session');
+        const usersCollection = db.collection('user');
+
+
+
+        // Fetch unique ntidUserId from session collection
+        const ninetyDaysAgo = new Date();
+        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+        /**
+         * All users which have logged in our system in last 90 days
+         */
+        const recentSessions = await sessionsCollection.distinct('jwt.ntidUserId', { createdAt: { $gte: ninetyDaysAgo } });
+
+        // Fetch all Cognito users
+        let userPoolUsers = [];
+        let PaginationToken;
         do {
             const params = {
                 UserPoolId,
                 Limit,
-                PaginationToken: paginationToken
+                PaginationToken,
             };
+            const result = await cognito.listUsers(params).promise();
+            userPoolUsers = userPoolUsers.concat(result.Users);
+            PaginationToken = result.PaginationToken;
+        } while (PaginationToken);
 
-            const response = await cognito.listUsers(params).promise();
-            const users = response.Users;
 
-            for (const user of users) {
+        // Process users and compare
+        const disabledUsers = [];
+        for (const user of userPoolUsers) {
 
-                const userAuthEvent = await cognito.adminListUserAuthEvents({
-                    UserPoolId,
-                    Username: user.Username
-                }).promise();
+            if (!recentSessions.includes(user?.Username)) {
+                // Deactivate Cognito user
 
-                if (!userAuthEvent?.AuthEvents?.length) {
-                    continue;
-                }
+                // await cognito.adminDisableUser({
+                //     UserPoolId: COGNITO_USER_POOL_ID,
+                //     Username: user.Username
+                // }).promise();
 
-                const lastEvent = userAuthEvent.AuthEvents.pop();
+                // Update MongoDB user collection
+                // await usersCollection.updateOne(
+                //     { ntidUserId: user.Username },
+                //     { $set: { active: false } },
+                // );
 
-                const lastEventDate = new Date(lastEvent.CreationDate);
-                const currentDate = new Date();
-                const diffTime = Math.abs(currentDate - lastEventDate);
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-                if (diffDays > daysInactive) {
-                    console.log(`${user.Username} user last activity date is ${lastEventDate.toLocaleDateString()}, Hence disabling user.`);
-
-                    await cognito.adminDisableUser({
-                        UserPoolId,
-                        Username: user.Username
-                    }).promise();
-                }
+                disabledUsers.push(user.Username);
             }
+        }
 
-            paginationToken = response.PaginationToken;
-        } while (paginationToken);
+        /**
+         * Closing DB connection
+         */
+        await client.close();
 
+        const date = new Date();
+
+        // Send email with disabled users
+        if (disabledUsers.length > 0) {
+            const mailOptions = {
+                from: FROM_EMAIL,
+                to: TO_EMAILS,
+                subject: `Disabled Users Notification | ${date.getDate()}-${date.getMonth() + 1}-${date.getFullYear()}`,
+                text: `The following users (${disabledUsers.length}) have been disabled in ${process.env.NODE_ENV || 'dev'} Environment:\n\n${disabledUsers.join('\n')}`,
+                attachments: [
+                    {
+                        filename: `Disabled NTIDs on ${date.getDate()}-${date.getMonth() + 1}-${date.getFullYear()}.csv`,
+                        content: `NTIDs\n${disabledUsers.join('\n')}`,
+                        contentType: 'text/csv'
+                    }
+                ]
+            };
+            await transporter.sendMail(mailOptions);
+        }
+
+        console.log('Script Executed.')
+
+        return {
+            statusCode: 200,
+            body: JSON.stringify({ message: 'Process completed successfully.' })
+        };
     } catch (error) {
-        console.error(`Error: ${error.message}`);
+        console.error('Error occurred:', error);
+        return {
+            statusCode: 500,
+            body: JSON.stringify({ message: 'An error occurred.' })
+        };
     }
-
-    return {
-        statusCode: 200,
-        body: JSON.stringify('Script executed successfully')
-    };
 };
